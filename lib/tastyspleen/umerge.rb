@@ -76,6 +76,7 @@ module TastySpleen
       @data.each do |row|
         id = Integer(row[IDX_UID])
         name = row[IDX_NAME]
+# (id.to_i == 110) and warn("\nbuild_name_to_id_map: 110 here: #{row.inspect}")
         (name_to_id.key?(name)) and raise("duplicate mapping for name #{name.inspect}")
         name_to_id[name] = id
       end      
@@ -158,9 +159,10 @@ module TastySpleen
       (ur + gr)
     end
     
-    def merge(dest_dir, src_dir, output_dir, preferred_name_to_uid_generator=nil)
+    def merge(dest_dir, src_dir, dest_output_dir, src_output_dir, preferred_name_to_uid_generator=nil)
       st = new_merge_state()
       dest = DataSet.new.load(dest_dir)
+# warn "\nmerge: dest_dir=#{dest_dir.inspect} dest=#{dest.inspect}"
       src  = DataSet.new.load(src_dir)
       remap_ugid_to_symbolic(dest.passwd, dest.group)
       remap_ugid_to_symbolic(src.passwd, src.group)
@@ -169,27 +171,30 @@ module TastySpleen
       merge_gdata(st, dest, src)
       remap_ugid_to_numeric(src.passwd, src.group)
       remap_ugid_to_numeric(dest.passwd, dest.group)
-      dest.save(output_dir)
+      dest.save(dest_output_dir)
+      src.save(src_output_dir)
       [st.uremaps, st.gremaps]
     end
     
     def merge_udata(st, dest, src, preferred_name_to_uid={})
-      merge_data(st, dest.passwd, dest.shadow, src.passwd, src.shadow, st.uremaps, preferred_name_to_uid)
+# warn "\nmerge_udata: preferred_name_to_uid=#{preferred_name_to_uid.inspect}"
+      merge_data(st, dest.passwd, dest.shadow, src.passwd, src.shadow, st.uremaps, ?u, preferred_name_to_uid)
     end
     
     def merge_gdata(st, dest, src)
       preferred_name_to_id = dest.passwd.build_name_to_uid_map  # try to keep gids with uids
-      merge_data(st, dest.group, dest.gshadow, src.group, src.gshadow, st.gremaps, preferred_name_to_id)
+# warn "\nmerge_gdata: preferred_name_to_id=#{preferred_name_to_id.inspect}"
+      merge_data(st, dest.group, dest.gshadow, src.group, src.gshadow, st.gremaps, ?g, preferred_name_to_id)
     end
 
-    def merge_data(st, dest_passwd, dest_shadow, src_passwd, src_shadow, remaps, preferred_name_to_id={})
+    def merge_data(st, dest_passwd, dest_shadow, src_passwd, src_shadow, remaps, mtype, preferred_name_to_id={})
       pass = 0
       begin
         pass += 1
         st.n_remaps = 0
         st.collisions.clear
 # warn "\npass... dest_sz=#{dest_passwd.size} src_sz=#{src_passwd.size}"
-        merge_data_pass(st, dest_passwd, dest_shadow, src_passwd, src_shadow, remaps, preferred_name_to_id, pass)
+        merge_data_pass(st, dest_passwd, dest_shadow, src_passwd, src_shadow, remaps, mtype, preferred_name_to_id, pass)
         done = (st.n_remaps.zero? && st.collisions.empty?) || (pass > (src_passwd.size * 2))
       end until done
       
@@ -222,7 +227,7 @@ module TastySpleen
     
     # FIRST_USER_UID = 1000
     
-    def merge_data_pass(st, dest_passwd, dest_shadow, src_passwd, src_shadow, remaps, preferred_name_to_id, pass)
+    def merge_data_pass(st, dest_passwd, dest_shadow, src_passwd, src_shadow, remaps, mtype, preferred_name_to_id, pass)
       src_passwd.each do |row|
 # warn  "row=#{row.inspect}"
         uname, uid = row[IDX_NAME], row[IDX_UID].to_i
@@ -273,7 +278,7 @@ module TastySpleen
               remap_and_copy(st, row, uname, uid, preferred_uid, src_shadow, dest_passwd, dest_shadow, remaps)
             end
           else
-            (preferred_uid && (uid != preferred_uid)) && warn("WARN: failed to remap #{uname.inspect} to preferred_id #{preferred_uid.inspect}")
+            (preferred_uid && (uid != preferred_uid)) && warn("WARN: pass #{pass} failed to remap #{uname.inspect} to preferred_#{mtype}id #{preferred_uid.inspect}")
             
             coll_dest_row = dest_passwd.find_by_uid(uid)
             if coll_dest_row
@@ -293,7 +298,7 @@ module TastySpleen
               if new_uid
                 remap_and_copy(st, row, uname, uid, new_uid, src_shadow, dest_passwd, dest_shadow, remaps)
               else
-                raise "out of uids remapping #{uid}"
+                raise "out of #{mtype}ids remapping #{uid}"
               end
             else
               # No conflict. We can just copy.
@@ -330,3 +335,42 @@ module TastySpleen
   end # UMerge
 
 end # TastySpleen
+
+
+if $0 == __FILE__
+  def usage_abort(msg=nil)
+    warn(msg) if msg
+    abort("Usage: #{File.basename($0)} srcdir_a srcdir_b dstdir_a dstdir_b [preferred_name_to_uid_module]")
+  end
+
+  (ARGV.size.between?(4,5)) or usage_abort
+  
+  srcdir_a = ARGV.shift
+  srcdir_b = ARGV.shift
+  dstdir_a = ARGV.shift
+  dstdir_b = ARGV.shift
+  
+  pnu_module_path = (ARGV.empty?) ? nil : ARGV.shift
+  
+  [["srcdir_a", srcdir_a], ["srcdir_b", srcdir_b], ["dstdir_a", dstdir_a], ["dstdir_b", dstdir_b]].each do |label, path|
+    test(?d, path) or usage_abort("FATAL: #{label} not found at #{path.inspect}")
+  end
+  
+  pnu_proc = nil
+  
+  if pnu_module_path
+    test(?f, pnu_module_path) or usage_abort("FATAL: preferred_name_to_uid_module not found at #{pnu_module_path.inspect}")
+    
+    pnu_proc = eval(File.read(pnu_module_path).strip)
+    
+    (pnu_proc && pnu_proc.respond_to?(:call)) or usage_abort("FATAL: preferred_name_to_uid_module generated unusable proc: #{pnu_proc.inspect}")
+  end
+  
+  merger = TastySpleen::UMerge.new
+  uremaps, gremaps = merger.merge(srcdir_a, srcdir_b, dstdir_a, dstdir_b, pnu_proc)
+  
+  remap_args = merger.to_uremap_args(uremaps, gremaps)
+  
+  File.open(File.join(dstdir_b, "uremap_argfile"), "w") {|io| io.puts(remap_args.join("\n"))}
+end
+
