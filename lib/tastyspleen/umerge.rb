@@ -297,7 +297,7 @@ module TastySpleen
             
             orig_id = (id.kind_of?(Array)) ? id.first : id
             
-            remap_and_copy(st, row, orig_id, r_id, src_db, dest_db, dest_shadow, remaps)
+            remap_and_copy(st, row, orig_id, r_id, src_shadow, dest_db, dest_shadow, remaps)
           end
         end
       end
@@ -331,7 +331,7 @@ module TastySpleen
           end
           new_id = find_mutually_available_id(src_db, dest_db, id_range_low, id_range_high)
           if new_id
-            remap_and_copy(st, row, id, new_id, src_db, dest_db, dest_shadow, remaps)
+            remap_and_copy(st, row, id, new_id, src_shadow, dest_db, dest_shadow, remaps)
           else
             raise "out of #{mtype}ids remapping #{id}"
           end
